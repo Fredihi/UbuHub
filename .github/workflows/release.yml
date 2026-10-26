@@ -1,45 +1,60 @@
 name: Release
 on:
   push:
-    tags: ['v*']
+    branches: [main]
   workflow_dispatch:
-    inputs:
-      tag:
-        description: 'Existing version tag to release (for example v0.1.0)'
-        required: true
-        type: string
 permissions:
   contents: read
-env:
-  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+# Serialize release decisions as well as publishing so two commits cannot race.
 concurrency:
-  group: release-${{ inputs.tag || github.ref_name }}
+  group: ubuntuhub-release
   cancel-in-progress: false
 jobs:
-  build:
+  plan:
     runs-on: ubuntu-22.04
-    timeout-minutes: 30
+    timeout-minutes: 5
+    outputs:
+      publish: ${{ steps.version.outputs.publish }}
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+      source_sha: ${{ steps.version.outputs.source_sha }}
     steps:
-      - name: Validate release tag input
-        shell: bash
-        run: |
-          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Choose a stable version tag such as v0.1.0."
-            exit 1
-          fi
       - uses: actions/checkout@v7
         with:
-          ref: refs/tags/${{ env.RELEASE_TAG }}
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Compare package.json with published releases
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
+        run: node scripts/plan-release.cjs
+  build:
+    needs: plan
+    if: needs.plan.outputs.publish == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.plan.outputs.source_sha }}
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: npm
-      - name: Validate public repository and release tag
+      - name: Align lockfile metadata with package.json version
+        run: node scripts/sync-package-version.cjs
+      - name: Validate public repository and release version
         env:
           REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
-        # Manual dispatch runs the workflow from main, but builds the selected
-        # tag. Pass that tag to scripts, including scripts from older tags.
         run: GITHUB_REF_NAME="$RELEASE_TAG" node scripts/validate-release.cjs
       - name: Install Linux build dependencies
         run: |
@@ -61,18 +76,51 @@ jobs:
             release/*.blockmap
             release/latest-linux.yml
   publish:
-    needs: build
+    needs: [plan, build]
+    if: needs.plan.outputs.publish == 'true'
     runs-on: ubuntu-22.04
     permissions:
       contents: write
+    env:
+      RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+      RELEASE_SHA: ${{ needs.plan.outputs.source_sha }}
     steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.plan.outputs.source_sha }}
+          fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
           name: linux-release
           path: release
+      - name: Create immutable tag for the tested source commit
+        shell: bash
+        run: |
+          if git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"; then
+            if [ "$(git rev-parse "$RELEASE_TAG^{commit}")" != "$RELEASE_SHA" ]; then
+              echo "::error::This version tag already points to different code. Increase package.json version."
+              exit 1
+            fi
+          else
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git tag -a "$RELEASE_TAG" "$RELEASE_SHA" -m "Release $RELEASE_TAG"
+            git push origin "refs/tags/$RELEASE_TAG"
+          fi
+      # GITHUB_TOKEN-created tags do not trigger another workflow; publish here.
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          gh release create "$RELEASE_TAG" release/* --verify-tag --title "UbuntuHub $RELEASE_TAG" --generate-notes --latest
+          if draft=$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft 2>/dev/null); then
+            if [ "$draft" != 'true' ]; then
+              echo "::error::This version is already published; published releases are never overwritten."
+              exit 1
+            fi
+            gh release upload "$RELEASE_TAG" release/* --clobber
+          else
+            gh release create "$RELEASE_TAG" release/* --verify-tag --title "UbuntuHub $RELEASE_TAG" --generate-notes --draft
+          fi
+          # Keep partially uploaded releases hidden from the application's updater.
+          gh release edit "$RELEASE_TAG" --draft=false --latest

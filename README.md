@@ -154,18 +154,17 @@ The `release/` directory also contains an AppImage. Mark it executable and run i
 
 Create a **public GitHub repository** and push this project, including `.github/workflows`, `build`, and `package-lock.json`. No repository URL needs to be hardcoded: the release build derives the owner/name from GitHub's `GITHUB_REPOSITORY` environment variable and embeds the public release feed in the AppImage. `"private": true` in package.json only prevents npm publishing; it does not make the GitHub repository private. This workflow rejects private GitHub repositories, since the installed app is designed to download updates without credentials.
 
-`ci.yml` builds and tests branch pushes and pull requests. `release.yml` runs for version tags, builds x64 Linux AppImage and DEB artifacts on Ubuntu, verifies metadata/checksums, and runs the Electron integration tests. A separate job publishes the GitHub Release only after those checks pass. GitHub supplies the publishing token automatically with `contents: write` in that job; no personal access token needs to be placed in the app or configured as a repository secret.
+`ci.yml` builds and tests branch pushes and pull requests. `release.yml` checks **package.json's version on every push to main**. It compares that version with all published stable GitHub releases. If it is higher (or no stable release exists yet), the workflow builds x64 Linux AppImage and DEB artifacts on Ubuntu, verifies metadata/checksums, and runs the Electron integration tests. A separate job creates the matching immutable version tag at the tested source commit and publishes the GitHub Release only after those checks pass. GitHub supplies the publishing token automatically with `contents: write` in that job; no personal access token needs to be placed in the app or configured as a repository secret. Tag creation and publishing happen in the same workflow; they do not rely on a second workflow being triggered by the bot's tag push.
 
-For the first release (the current version is 0.1.0), commit and push your code, then push its matching tag:
+For the first release, commit and push the project to main. No tag commands are needed:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git push origin main
 ```
 
 Watch **Actions → Release** in GitHub. When it succeeds, **Releases** contains `UbuntuHub-x64.AppImage`, a `.deb`, `latest-linux.yml`, and any generated blockmap. Leave the update metadata and binaries together in the published release. Draft releases, prereleases and version downgrades are not used by this updater.
 
-If the tag already exists but no Release run started, pushing the branch or pushing an unchanged tag does not create another tag-push event. You can recover without changing the tag: once the latest workflow is on your default branch, open **Actions → Release → Run workflow**, select the default branch, enter the existing tag (for example `v0.1.0`), and run it. The workflow builds the code at that tag and validates its package version, rather than packaging the current default branch. The `publish` job is part of **Release** and starts only after its `build` job succeeds; it is separate from the ordinary **Checks** workflow. Future newly pushed `v*` tags still start automatically.
+If a build or upload fails, use **Actions → Release → Run workflow**, selecting main. No version/tag input is required. The same package version can be retried while it has no published release. Uploads are staged in a draft release and only published after all files are uploaded; a retry can finish an incomplete draft. An unchanged or lower version produces a clear “Skipping release” summary and skips building/publishing. Published releases and tags pointing to different source commits are never overwritten. If a tag was already created before publishing failed, rerun the original failed run; if you changed the code since then, increase the package version again. All release runs share one concurrency group to prevent competing version decisions. If your default branch is renamed, update the workflow's `push.branches` filter.
 
 ### First installation on the Ubuntu PC
 
@@ -182,15 +181,15 @@ Use that AppImage path for any desktop shortcut or login-startup entry. The file
 
 ### Publishing an update
 
-Commit your changes. In your Git checkout on Windows, increase the version and push the new commit/tag. For example, upgrading 0.1.0 to 0.1.1:
+Increase **only the version in package.json**, for example from `0.1.0` to `0.1.1`, then commit and push your changes to main. The workflow creates `v0.1.1`, builds the app and publishes it automatically. You never need to create or push tags yourself. Choose a higher patch version for fixes (`0.1.1`), a minor version for new features (`0.2.0`), or a major version for breaking changes (`1.0.0`).
+
+The build aligns package-lock.json's root version metadata to package.json without changing dependency resolutions or creating commits in your repository. Alternatively, update both version files locally without creating a tag:
 
 ```bash
-npm version patch
-git push origin HEAD
-git push origin v0.1.1
+npm version patch --no-git-tag-version
 ```
 
-`npm version` updates both package.json and package-lock.json. The release workflow requires the tag to match the version exactly, so use the newly generated tag for subsequent releases. You do not need to build locally, transfer source files or reinstall on the Ubuntu PC.
+Commit and push normally afterward. You do not need to build locally, transfer source files or reinstall on the Ubuntu PC. Increasing the version is intentional: pushing ordinary code changes while retaining an already-published version will run checks but will not publish an update.
 
 The released AppImage checks for updates 15 seconds after startup and every six hours. Available updates download in the background, with progress shown in the footer. A **Restart to update** tile appears in the launcher and Moonlight library; select it with left/right and A/Enter, or click it. Installation is refused while any managed application is starting/running. Close those apps or disconnect Moonlight first, then select the action again. New launches are blocked during the update restart, and the replacement instance can take over the single-instance lock. Updates are never installed automatically on ordinary app exit.
 
@@ -219,7 +218,7 @@ electron/main.ts              Windows, protocol, IPC and OS integration
 electron/preload.ts           Narrow context-isolated bridge
 config/apps.json              Editable application list (Moonlight and Steam)
 tests/                        Configuration, repeat and process tests
-.github/workflows/            CI checks and tag-triggered GitHub Releases
+.github/workflows/            CI checks and package-version-driven GitHub Releases
 build/github-release.cjs      Automatic GitHub release feed configuration
 ```
 

@@ -21,6 +21,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libgtk-3-0 libnss3 libasound2 libgbm1 libatk-bridge2.0-0 libxss1 libxtst6 xvfb xauth
+      - run: node scripts/sync-package-version.cjs
       - run: npm ci
       - run: npm run build
       - run: npm run typecheck
