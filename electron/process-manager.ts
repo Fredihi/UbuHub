@@ -1,9 +1,13 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import type { AppConfig, AppTile, Result } from '../shared/types';
+import { nativeLaunchArgs, prepareNativeFullscreen } from './fullscreen';
 
 interface Managed { child: ChildProcess; stopped: boolean; }
 export class ProcessManager {
   private processes = new Map<string, Managed>();
+  private preparing = new Set<string>();
+  private cancelled = new Set<string>();
+  private stopping = false;
   private states = new Map<string, Pick<AppTile, 'status' | 'error'>>();
   constructor(private apps: AppConfig[], private changed: () => void, private exited: (id: string) => void) {}
   list(): AppTile[] {
@@ -16,10 +20,25 @@ export class ProcessManager {
   async launch(id: string, openWeb: (config: AppConfig) => Promise<void>, args?: string[]): Promise<Result> {
     const config = this.apps.find(a => a.id === id);
     if (!config) return { ok: false, error: 'Unknown application.' };
-    if (this.processes.has(id)) return { ok: false, error: 'This application is already running.' };
+    if (this.stopping) return { ok: false, error: 'UbuntuHub is closing.' };
+    if (this.processes.has(id) || this.preparing.has(id)) return { ok: false, error: 'This application is already running.' };
+    this.preparing.add(id);
+    this.cancelled.delete(id);
     this.state(id, 'starting');
+    try { if (!args) await prepareNativeFullscreen(config); }
+    catch (error) {
+      this.preparing.delete(id);
+      const message = error instanceof Error ? error.message : 'Could not prepare fullscreen launch.';
+      this.state(id, 'error', message); this.exited(id);
+      return { ok: false, error: message };
+    }
+    this.preparing.delete(id);
+    if (this.stopping || this.cancelled.delete(id)) {
+      this.state(id, 'idle'); this.exited(id);
+      return { ok: false, error: 'Application launch was cancelled.' };
+    }
     let tail = '';
-    const child = spawn(config.command, args ?? config.args, { cwd: config.cwd, shell: false, detached: process.platform !== 'win32', stdio: ['ignore', 'ignore', 'pipe'] });
+    const child = spawn(config.command, args ?? nativeLaunchArgs(config), { cwd: config.cwd, shell: false, detached: process.platform !== 'win32', stdio: ['ignore', 'ignore', 'pipe'] });
     const entry: Managed = { child, stopped: false };
     this.processes.set(id, entry);
     child.stderr?.on('data', data => { tail = (tail + String(data)).slice(-2000); });
@@ -73,8 +92,9 @@ export class ProcessManager {
     }
   }
   stop(id: string) {
+    if (this.preparing.has(id)) this.cancelled.add(id);
     const entry = this.processes.get(id);
     if (entry) { entry.stopped = true; this.killTree(entry.child); }
   }
-  stopAll() { for (const id of this.processes.keys()) this.stop(id); }
+  stopAll() { this.stopping = true; for (const id of this.processes.keys()) this.stop(id); }
 }

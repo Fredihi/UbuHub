@@ -12,6 +12,6 @@
   {
     "id": "steam", "name": "Steam", "subtitle": "Your game library",
     "icon": "steam", "color": "#79bfff", "type": "native",
-    "command": "steam", "args": [], "cwd": "~"
+    "command": "steam", "args": ["-gamepadui", "-fullscreen"], "cwd": "~"
   }
 ]

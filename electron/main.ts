@@ -11,7 +11,10 @@ import type { AppConfig } from '../shared/types';
 
 const dev = !app.isPackaged && process.env.UBUNTUHUB_DEV === '1';
 const launcherURL = dev ? 'http://127.0.0.1:3000/' : 'ubuntuhub://launcher/';
-protocol.registerSchemesAsPrivileged([{ scheme: 'ubuntuhub', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'ubuntuhub', privileges: { standard: true, secure: true, supportFetchAPI: true } },
+  { scheme: 'ubuntuhub-art', privileges: { standard: true, secure: true, supportFetchAPI: true } }
+]);
 let launcher: BrowserWindow;
 let manager: ProcessManager;
 let moonlight: MoonlightIntegration;
@@ -71,7 +74,7 @@ else {
         if (url.hostname !== 'launcher' || path.relative(root, file).startsWith('..') || path.isAbsolute(path.relative(root, file))) return new Response('Forbidden', { status: 403 });
         return net.fetch(pathToFileURL(file).href);
       });
-      session.defaultSession.webRequest.onHeadersReceived((details, callback) => callback({ responseHeaders: { ...details.responseHeaders, 'Content-Security-Policy': ["default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-src 'none'"] } }));
+      session.defaultSession.webRequest.onHeadersReceived((details, callback) => callback({ responseHeaders: { ...details.responseHeaders, 'Content-Security-Policy': ["default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: ubuntuhub-art://covers; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-src 'none'"] } }));
     }
     let configPath = process.env.UBUNTUHUB_CONFIG || path.join(app.getAppPath(), 'config', 'apps.json');
     if (app.isPackaged && !process.env.UBUNTUHUB_CONFIG) {
@@ -80,6 +83,16 @@ else {
     }
     const configs = await loadConfig(configPath);
     moonlight = new MoonlightIntegration(configs);
+    protocol.handle('ubuntuhub-art', async request => {
+      try {
+        const url = new URL(request.url);
+        const parts = url.pathname.split('/').slice(1).map(decodeURIComponent);
+        if (request.method !== 'GET' || url.hostname !== 'covers' || parts.length !== 2 || parts.some(part => !/^[a-z0-9-]+$/.test(part))) return new Response('Not found', { status: 404 });
+        const bytes = await moonlight.artwork(parts[0], parts[1]);
+        if (!bytes) return new Response('No cover available', { status: 404, headers: { 'Cache-Control': 'no-store' } });
+        return new Response(new Uint8Array(bytes), { headers: { 'Content-Type': 'image/png', 'Cache-Control': 'private, max-age=3600', 'X-Content-Type-Options': 'nosniff' } });
+      } catch { return new Response('No cover available', { status: 404, headers: { 'Cache-Control': 'no-store' } }); }
+    });
     manager = new ProcessManager(configs, () => { if (launcher && !launcher.isDestroyed()) launcher.webContents.send('hub:apps', manager.list()); updates?.refresh(); }, id => {
       windows.get(id)?.close(); restore();
     });

@@ -23,7 +23,8 @@ export function parseMoonlight(input: unknown): MoonlightConfig {
   });
   const streamArgs = raw.streamArgs ?? ['--display-mode', 'fullscreen', '--no-quit-after'];
   if (!Array.isArray(streamArgs) || streamArgs.length > 100 || !streamArgs.every(v => typeof v === 'string' && !v.includes('\0'))) throw new Error('Moonlight streamArgs must be an array of strings.');
-  return { host: raw.host, games: parsed, streamArgs };
+  if (raw.settingsPath !== undefined && (typeof raw.settingsPath !== 'string' || !raw.settingsPath.trim() || raw.settingsPath.includes('\0'))) throw new Error('Moonlight settingsPath must be a nonempty local file path.');
+  return { host: raw.host, games: parsed, streamArgs, ...(raw.settingsPath === undefined ? {} : { settingsPath: raw.settingsPath as string }) };
 }
 
 export function parseConfig(input: unknown, base: string): AppConfig[] {
@@ -46,6 +47,8 @@ export function parseConfig(input: unknown, base: string): AppConfig[] {
     }
     if (a.startupTimeoutMs !== undefined && (typeof a.startupTimeoutMs !== 'number' || !Number.isFinite(a.startupTimeoutMs) || a.startupTimeoutMs < 1000 || a.startupTimeoutMs > 300000)) throw new Error(`Invalid startup timeout for ${a.id}`);
     const cwd = (a.cwd as string).replace(/^~(?=$|[\\/])/, os.homedir());
+    const moonlight = a.moonlight === undefined ? undefined : parseMoonlight(a.moonlight);
+    if (moonlight?.settingsPath) moonlight.settingsPath = path.resolve(base, moonlight.settingsPath.replace(/^~(?=$|[\\/])/, os.homedir()));
     return {
       id: a.id as string, name: a.name as string, command: a.command as string,
       cwd: path.resolve(base, cwd), args: a.args as string[], type: a.type,
@@ -53,7 +56,7 @@ export function parseConfig(input: unknown, base: string): AppConfig[] {
       icon: ['terminal', 'files', 'web', 'moon', 'steam'].includes(String(a.icon)) ? a.icon as AppConfig['icon'] : 'web',
       color: typeof a.color === 'string' && /^#[0-9a-f]{6}$/i.test(a.color) ? a.color : '#a89cff',
       url: a.url as string | undefined, startupTimeoutMs: a.startupTimeoutMs as number | undefined,
-      moonlight: a.moonlight === undefined ? undefined : parseMoonlight(a.moonlight)
+      moonlight
     };
   });
 }

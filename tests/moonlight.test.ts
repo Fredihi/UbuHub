@@ -37,7 +37,7 @@ test('curated games work without discovery; refresh caches host list and retains
   let calls = 0;
   const integration = new MoonlightIntegration([config({ host: 'pc', games: [{ id: 'favorite', name: 'Favorite', app: 'Real App' }] })], async (_config, args) => {
     calls++;
-    assert.deepEqual(args, ['list', '--', 'pc']);
+    assert.deepEqual(args, ['list', '--csv', '--', 'pc']);
     if (calls > 1) throw new Error('Host offline');
     return 'Real App\nAnother App\n';
   });

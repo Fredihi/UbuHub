@@ -3,7 +3,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useController } from '../lib/use-controller';
 import type { AppTile, MoonlightLibrary, Result, UpdateState } from '../shared/types';
 
-interface LibraryItem { id: string; name: string; gameId?: string; kind: 'game' | 'refresh' | 'open' | 'back' | 'update'; }
+interface LibraryItem { id: string; name: string; gameId?: string; artwork?: string; kind: 'game' | 'refresh' | 'open' | 'back' | 'update'; }
+function GameCover({ src }: { src: string }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) return null;
+  // A local Electron protocol serves only verified PNGs from known Moonlight
+  // cache entries. Next's optimizer cannot serve these desktop-only resources.
+  // eslint-disable-next-line @next/next/no-img-element
+  return <img className="game-cover" src={src} alt="" aria-hidden="true" loading="lazy" decoding="async" onError={() => setFailed(true)} />;
+}
 export function MoonlightLibraryView({ application, onBack, update }: { application: AppTile; onBack: () => void; update: { state: UpdateState | null; actionLabel: string | null; act: () => Promise<Result> } }) {
   const [library, setLibrary] = useState<MoonlightLibrary | null>(null);
   const [selected, setSelected] = useState('refresh');
@@ -32,7 +40,7 @@ export function MoonlightLibraryView({ application, onBack, update }: { applicat
   }, [application.id]);
   useEffect(() => { void load(); return () => { request.current++; }; }, [load]);
   const items = useMemo<LibraryItem[]>(() => [
-    ...(library?.games ?? []).map(game => ({ id: `game:${game.id}`, gameId: game.id, name: game.name, kind: 'game' as const })),
+    ...(library?.games ?? []).map(game => ({ id: `game:${game.id}`, gameId: game.id, name: game.name, artwork: game.artwork, kind: 'game' as const })),
     { id: 'refresh', name: 'Refresh games', kind: 'refresh' },
     { id: 'open', name: 'Open Moonlight', kind: 'open' },
     { id: 'back', name: 'Back', kind: 'back' },
@@ -86,6 +94,7 @@ export function MoonlightLibraryView({ application, onBack, update }: { applicat
           onFocus={() => setSelected(item.id)} onClick={() => { setSelected(item.id); void activate(item); }}>
           <div className="tile"><div className="tile-grain"/><div className="tile-shimmer" aria-hidden="true"/>
             {item.kind === 'game' ? <><span className="game-monogram" aria-hidden="true">{item.name.split(/\s+/).slice(0, 2).map(word => Array.from(word)[0]).join('')}</span><span className="tile-type">STREAM VIA MOONLIGHT</span></> : <span className="utility-icon" aria-hidden="true">{item.kind === 'refresh' || item.kind === 'update' ? '⟳' : item.kind === 'open' ? '☾' : '‹'}</span>}
+            {item.kind === 'game' && item.artwork && <GameCover key={item.artwork} src={item.artwork} />}
             {starting && <span className="running"><span className="spinner"/> Starting</span>}{running && <span className="running">● Streaming</span>}
           </div>
           <div className="tile-caption"><span className="app-name">{item.name}</span></div>

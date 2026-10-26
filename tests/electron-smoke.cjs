@@ -3,10 +3,12 @@ const { app, BrowserWindow } = require('electron');
 const { mkdtempSync, readFileSync, writeFileSync, mkdirSync, rmSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 const assert = require('node:assert/strict');
 const root = path.resolve(__dirname, '..');
 app.setAppPath(root);
 const temp = mkdtempSync(path.join(tmpdir(), 'ubuntuhub-smoke-'));
+process.env.XDG_CACHE_HOME = path.join(temp, 'cache');
 process.env.UBUNTUHUB_CONFIG = path.join(temp, 'apps.json');
 delete process.env.UBUNTUHUB_DEV;
 const base = { color: '#a89cff', cwd: root, type: 'native', command: process.execPath };
@@ -17,12 +19,24 @@ const moonlightFixture = path.join(temp, 'moonlight.cjs');
 const streamArguments = path.join(temp, 'stream-args.json');
 const hostOffline = path.join(temp, 'host-offline');
 const streamFailure = path.join(temp, 'stream-failure');
+const covers = path.join(process.env.XDG_CACHE_HOME, 'Moonlight/boxart/host-one');
+mkdirSync(covers, { recursive: true });
+const { pngFixture } = require('./fixtures/png.cjs');
+writeFileSync(path.join(covers, '100.png'), pngFixture(200, 300, [32, 103, 166]));
+writeFileSync(path.join(covers, '200.png'), pngFixture(200, 300, [142, 51, 112]));
+writeFileSync(path.join(covers, '300.png'), 'Invalid artwork should fall back to initials');
+const csv = [
+  'Name, ID, HDR Support, App Collection Game, Hidden, Direct Launch, Boxart URL',
+  `"Steam Big Picture",100,false,false,false,false,"${pathToFileURL(path.join(covers, '100.png')).href}"`,
+  `"Hades II",200,false,false,false,false,"${pathToFileURL(path.join(covers, '200.png')).href}"`,
+  `"Game with spaces",300,false,false,false,false,"${pathToFileURL(path.join(covers, '300.png')).href}"`,
+].join('\n');
 writeFileSync(moonlightFixture, `
   const fs = require('fs');
   const args = process.argv.slice(2);
   if (args[0] === 'list') {
     if (fs.existsSync(${JSON.stringify(hostOffline)})) { console.error('Host offline'); process.exit(1); }
-    console.log('Steam Big Picture\\nHades II\\nGame with spaces');
+    console.log(args.includes('--csv') ? ${JSON.stringify(csv)} : 'Steam Big Picture\\nHades II\\nGame with spaces');
   } else if (args[0] === 'stream') {
     fs.writeFileSync(${JSON.stringify(streamArguments)}, JSON.stringify(args));
     if (fs.existsSync(${JSON.stringify(streamFailure)})) { console.error('Stream connection failed'); process.exit(3); }
@@ -105,6 +119,7 @@ app.on('browser-window-created', (_event, win) => {
       assert.equal(web.ok, true);
       const child = BrowserWindow.getAllWindows().find(w => w !== win);
       assert.ok(child);
+      await until(() => child.isFullScreen());
       assert.equal(await child.webContents.executeJavaScript('typeof window.ubuntuHub'), 'undefined');
       assert.equal(win.isVisible(), false);
       child.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' });
@@ -141,6 +156,10 @@ app.on('browser-window-created', (_event, win) => {
       assert.equal(await wc.executeJavaScript('!!document.querySelector(".moonlight-library")'), true);
       await wc.executeJavaScript('Array.from(document.querySelectorAll(".library-utility")).find(b => b.textContent.includes("Refresh games")).click()');
       await until(() => wc.executeJavaScript('document.querySelectorAll(".game-button").length === 3'));
+      await until(() => wc.executeJavaScript('document.querySelectorAll(".game-cover").length === 2 && Array.from(document.querySelectorAll(".game-cover")).every(image => image.complete && image.naturalWidth === 200 && image.naturalHeight === 300)'));
+      assert.equal(await wc.executeJavaScript('getComputedStyle(document.querySelector(".game-cover")).objectFit'), 'contain');
+      assert.equal(await wc.executeJavaScript('Array.from(document.querySelectorAll(".game-button")).find(button => button.textContent.includes("Game with spaces")).querySelector(".game-cover")'), null);
+      const previousArtwork = (await wc.executeJavaScript('window.ubuntuHub.moonlightLibrary("moonlight")')).library.games[0].artwork;
       await delay(1200);
       writeFileSync(path.join(root, 'docs', 'moonlight-library.png'), (await wc.capturePage()).toPNG());
       writeFileSync(hostOffline, '1');
@@ -148,6 +167,9 @@ app.on('browser-window-created', (_event, win) => {
       await until(() => wc.executeJavaScript('document.querySelector(".feedback").textContent.includes("Host offline")'));
       assert.equal(await wc.executeJavaScript('document.querySelectorAll(".game-button").length'), 3);
       rmSync(hostOffline);
+      await wc.executeJavaScript('Array.from(document.querySelectorAll(".library-utility")).find(b => b.textContent.includes("Refresh games")).click()');
+      await until(async () => (await wc.executeJavaScript('window.ubuntuHub.moonlightLibrary("moonlight")')).library.games[0].artwork !== previousArtwork);
+      await until(() => wc.executeJavaScript('Array.from(document.querySelectorAll(".game-cover")).filter(image => image.complete && image.naturalWidth === 200).length === 2'));
       writeFileSync(streamFailure, '1');
       await wc.executeJavaScript('Array.from(document.querySelectorAll(".game-button")).find(b => b.textContent.includes("Hades II")).click()');
       await until(async () => (await wc.executeJavaScript('window.ubuntuHub.listApps()'))[3].status === 'error');
@@ -204,7 +226,7 @@ app.on('browser-window-created', (_event, win) => {
       await until(() => wc.executeJavaScript('!!document.querySelector(".update-button")'));
       assert.equal((await wc.executeJavaScript('window.ubuntuHub.getUpdateState()')).status, 'ready');
       passed = true;
-      console.log('PASS: launcher/Moonlight lifecycle and controller input; update retry, download progress, controller restart, game-session blocking and install failure recovery');
+      console.log('PASS: launcher/Moonlight lifecycle, cached cover rendering/aspect ratio/fallback/refresh and controller input; update restart, game-session blocking and recovery');
     })().catch(error => { console.error(error); process.exitCode = 1; }).finally(() => app.quit());
   });
 });

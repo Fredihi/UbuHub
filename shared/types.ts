@@ -9,12 +9,13 @@ export interface AppTile {
   error?: string;
   integration?: 'moonlight';
 }
-export interface MoonlightGame { id: string; name: string; }
+export interface MoonlightGame { id: string; name: string; artwork?: string; }
 export interface MoonlightGameConfig extends MoonlightGame { app: string; }
 export interface MoonlightConfig {
   host: string;
   games: MoonlightGameConfig[];
   streamArgs: string[];
+  settingsPath?: string;
 }
 export interface MoonlightLibrary {
   host: string;
