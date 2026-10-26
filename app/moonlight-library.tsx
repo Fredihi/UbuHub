@@ -1,10 +1,10 @@
 'use client';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useController } from '../lib/use-controller';
-import type { AppTile, MoonlightLibrary } from '../shared/types';
+import type { AppTile, MoonlightLibrary, Result, UpdateState } from '../shared/types';
 
-interface LibraryItem { id: string; name: string; gameId?: string; kind: 'game' | 'refresh' | 'open' | 'back'; }
-export function MoonlightLibraryView({ application, onBack }: { application: AppTile; onBack: () => void }) {
+interface LibraryItem { id: string; name: string; gameId?: string; kind: 'game' | 'refresh' | 'open' | 'back' | 'update'; }
+export function MoonlightLibraryView({ application, onBack, update }: { application: AppTile; onBack: () => void; update: { state: UpdateState | null; actionLabel: string | null; act: () => Promise<Result> } }) {
   const [library, setLibrary] = useState<MoonlightLibrary | null>(null);
   const [selected, setSelected] = useState('refresh');
   const [message, setMessage] = useState('');
@@ -35,8 +35,9 @@ export function MoonlightLibraryView({ application, onBack }: { application: App
     ...(library?.games ?? []).map(game => ({ id: `game:${game.id}`, gameId: game.id, name: game.name, kind: 'game' as const })),
     { id: 'refresh', name: 'Refresh games', kind: 'refresh' },
     { id: 'open', name: 'Open Moonlight', kind: 'open' },
-    { id: 'back', name: 'Back', kind: 'back' }
-  ], [library]);
+    { id: 'back', name: 'Back', kind: 'back' },
+    ...(update.actionLabel ? [{ id: 'update', name: update.actionLabel, kind: 'update' as const }] : [])
+  ], [library, update.actionLabel]);
   const index = Math.max(0, items.findIndex(item => item.id === selected));
   const move = useCallback((direction: number) => {
     if (busy.current) return;
@@ -45,6 +46,7 @@ export function MoonlightLibraryView({ application, onBack }: { application: App
   }, [index, items]);
   const activate = useCallback(async (item: LibraryItem) => {
     if (item.kind === 'back') { onBack(); return; }
+    if (item.kind === 'update') { const result = await update.act(); if (!result.ok) setMessage(result.error); return; }
     if (loading || busy.current) return;
     if (item.kind === 'refresh') { await load(true); return; }
     if (application.status === 'running' || application.status === 'starting') {
@@ -60,7 +62,7 @@ export function MoonlightLibraryView({ application, onBack }: { application: App
       if (!result.ok) setMessage(result.error);
     } catch { setMessage('Could not reach the launcher. Restart UbuntuHub to try again.'); }
     finally { busy.current = false; setPending(false); }
-  }, [application.id, application.status, library?.configured, load, loading, onBack]);
+  }, [application.id, application.status, library?.configured, load, loading, onBack, update.act]);
   const connected = useController(move, () => void activate(items[index]), onBack);
   useEffect(() => {
     refs.current.get(selected)?.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'nearest', inline: 'center' });
@@ -83,7 +85,7 @@ export function MoonlightLibraryView({ application, onBack }: { application: App
           aria-disabled={item.kind !== 'back' && (loading || pending)}
           onFocus={() => setSelected(item.id)} onClick={() => { setSelected(item.id); void activate(item); }}>
           <div className="tile"><div className="tile-grain"/><div className="tile-shimmer" aria-hidden="true"/>
-            {item.kind === 'game' ? <><span className="game-monogram" aria-hidden="true">{item.name.split(/\s+/).slice(0, 2).map(word => Array.from(word)[0]).join('')}</span><span className="tile-type">STREAM VIA MOONLIGHT</span></> : <span className="utility-icon" aria-hidden="true">{item.kind === 'refresh' ? '⟳' : item.kind === 'open' ? '☾' : '‹'}</span>}
+            {item.kind === 'game' ? <><span className="game-monogram" aria-hidden="true">{item.name.split(/\s+/).slice(0, 2).map(word => Array.from(word)[0]).join('')}</span><span className="tile-type">STREAM VIA MOONLIGHT</span></> : <span className="utility-icon" aria-hidden="true">{item.kind === 'refresh' || item.kind === 'update' ? '⟳' : item.kind === 'open' ? '☾' : '‹'}</span>}
             {starting && <span className="running"><span className="spinner"/> Starting</span>}{running && <span className="running">● Streaming</span>}
           </div>
           <div className="tile-caption"><span className="app-name">{item.name}</span></div>

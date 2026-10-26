@@ -80,6 +80,8 @@ button { font: inherit; }
 .library-utility .app-name { font-size: clamp(15px, 1.2vw, 20px); letter-spacing: -.3px; }
 .utility-icon { font-size: 44px; color: var(--accent); }
 .library-hints { margin: 4px 6vw 0; font-size: 12px; color: #a4a4ba; word-spacing: 3px; white-space: pre-wrap; }
+.update-status { color: #a3c4ba; font-size: clamp(12px, 1vw, 17px); min-height: 1.5em; }
+.tile-track:has(.update-button) { align-items: end; }
 @media (max-width: 700px) { .moonlight-heading { align-items: start; flex-direction: column; gap: 8px; } .game-track .game-button { flex-basis: 70vw; } .game-track .library-utility { flex-basis: 145px; } }
 @keyframes aurora-drift { from { transform: translate3d(-3%, -6%, 0) rotate(-10deg) scale(1); } to { transform: translate3d(15%, 12%, 0) rotate(12deg) scale(1.15); } }
 @keyframes stars-drift { from { transform: translate3d(-1%, 1%, 0); } to { transform: translate3d(3%, -3%, 0); } }

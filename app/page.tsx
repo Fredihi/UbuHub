@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AppTile, HubAPI } from '../shared/types';
 import { useController } from '../lib/use-controller';
 import { MoonlightLibraryView } from './moonlight-library';
+import { useUpdates } from '../lib/use-updates';
 
 declare global { interface Window { ubuntuHub?: HubAPI } }
 const preview: AppTile[] = [
@@ -22,6 +23,8 @@ export default function Home() {
   const [message, setMessage] = useState('');
   const [visible, setVisible] = useState(true);
   const [libraryAppId, setLibraryAppId] = useState<string | null>(null);
+  const update = useUpdates();
+  const itemCount = apps.length + (update.actionLabel ? 1 : 0);
   const launching = useRef(false);
   const tileRefs = useRef<(HTMLButtonElement | null)[]>([]);
   useEffect(() => {
@@ -35,9 +38,16 @@ export default function Home() {
   const move = useCallback((direction: number) => {
     if (launching.current) return;
     setMessage('');
-    setSelected(index => Math.max(0, Math.min(apps.length - 1, index + direction)));
-  }, [apps.length]);
+    setSelected(index => Math.max(0, Math.min(itemCount - 1, index + direction)));
+  }, [itemCount]);
   const launch = useCallback(async (index = selected) => {
+    if (launching.current) return;
+    if (index === apps.length && update.actionLabel) {
+      launching.current = true;
+      try { const result = await update.act(); if (!result.ok) setMessage(result.error); }
+      finally { launching.current = false; }
+      return;
+    }
     const app = apps[index];
     if (!app || launching.current) return;
     if (app.integration === 'moonlight') { setMessage(''); setLibraryAppId(app.id); return; }
@@ -49,7 +59,7 @@ export default function Home() {
       if (!result.ok) setMessage(result.error);
     } catch { setMessage('Could not reach the launcher. Restart UbuntuHub to try again.'); }
     finally { launching.current = false; }
-  }, [apps, selected]);
+  }, [apps, selected, update.actionLabel, update.act]);
   const back = useCallback(() => { setMessage(''); void window.ubuntuHub?.returnToLauncher(); }, []);
   const connected = useController(move, () => void launch(), back, libraryAppId === null);
   useEffect(() => {
@@ -59,6 +69,8 @@ export default function Home() {
     return () => document.removeEventListener('visibilitychange', update);
   }, []);
   useEffect(() => { if (!libraryAppId) tileRefs.current[selected]?.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'nearest', inline: 'center' }); }, [selected, libraryAppId]);
+  useEffect(() => { setSelected(index => Math.min(index, Math.max(0, itemCount - 1))); }, [itemCount]);
+  useEffect(() => { if (update.state?.canInstall) setMessage(''); }, [update.state?.canInstall]);
   const current = apps[selected];
   const libraryApp = apps.find(item => item.id === libraryAppId);
   return (
@@ -73,7 +85,7 @@ export default function Home() {
         <div className="brand"><span className="brand-symbol" aria-hidden="true">u<span>•</span></span><span>ubuntu<span className="font-normal text-[#9b9ca3]">hub</span></span></div>
         <div className="connection"><span className={connected ? 'status-dot online' : 'status-dot'} />{libraryApp ? 'Moonlight library' : connected ? 'Controller connected' : 'Keyboard ready'}</div>
       </header>
-      {libraryApp ? <MoonlightLibraryView application={libraryApp} onBack={() => setLibraryAppId(null)} /> : <section className="library relative flex flex-1 flex-col justify-center" aria-label="Application launcher">
+      {libraryApp ? <MoonlightLibraryView application={libraryApp} onBack={() => setLibraryAppId(null)} update={update} /> : <section className="library relative flex flex-1 flex-col justify-center" aria-label="Application launcher">
         {/* <div className="section-heading"><span>YOUR APPLICATIONS</span><span className="count">{String(selected + 1).padStart(2, '0')} <span>/ {String(apps.length).padStart(2, '0')}</span></span></div> */}
         <div className="tile-track" role="group" aria-label="Applications">
           {apps.map((app, index) => <button
@@ -86,10 +98,19 @@ export default function Home() {
             <div className="tile"><div className="tile-grain"/><div className="tile-orbit" aria-hidden="true"/><div className="tile-shimmer" aria-hidden="true"/><span className="tile-number">{String(index + 1).padStart(2, '0')}</span><span className="tile-icon"><Icon type={app.icon}/></span><span className="tile-type">{app.icon === 'moon' ? 'GAME STREAMING' : app.icon === 'web' ? 'LOCAL WEB APP' : 'NATIVE APP'}</span>{app.status === 'starting' && <span className="running"><span className="spinner"/> Starting</span>}{app.status === 'running' && <span className="running">● Running</span>}</div>
             <div className="tile-caption"><span className="app-name">{app.name}</span></div>
           </button>)}
+          {update.actionLabel && <button ref={element => { tileRefs.current[apps.length] = element; }}
+            className={`app-button library-utility update-button ${selected === apps.length ? 'selected' : ''}`}
+            style={{ '--accent': '#a3e9cb', '--tile-index': apps.length } as React.CSSProperties}
+            aria-pressed={selected === apps.length} aria-label={update.actionLabel}
+            onFocus={() => setSelected(apps.length)} onClick={() => { setSelected(apps.length); void launch(apps.length); }}>
+            <div className="tile"><span className="utility-icon" aria-hidden="true">↻</span><span className="tile-type">{update.state?.version ? `v${update.state.version}` : 'UBUNTUHUB'}</span></div>
+            <div className="tile-caption"><span className="app-name">{update.actionLabel}</span></div>
+          </button>}
         </div>
-        <div className="feedback" role="status" aria-live="polite">{message || current?.error || (current?.status === 'starting' ? `Starting ${current.name}…` : '\u00a0')}</div>
+        <div className="feedback" role="status" aria-live="polite">{message || (selected === apps.length ? update.state?.message || (update.state?.status === 'ready' && !update.state.canInstall ? 'Finish playing or close your running apps before restarting.' : '') : current?.error) || (current?.status === 'starting' ? `Starting ${current.name}…` : '\u00a0')}</div>
       </section>}
       <footer className="relative flex items-center justify-between px-[6vw] pb-[4vh]">
+        <span className="update-status" role="status">{update.state?.status === 'downloading' ? `Downloading update · ${update.state.progress ?? 0}%` : update.state?.status === 'checking' ? 'Checking for updates…' : update.state?.status === 'installing' ? 'Restarting UbuntuHub…' : update.state?.status === 'ready' ? `Update ready · v${update.state.version}` : ''}</span>
       </footer>
     </main>
   );

@@ -174,15 +174,60 @@ app.on('browser-window-created', (_event, win) => {
       assert.equal((await wc.executeJavaScript('window.ubuntuHub.listApps()'))[3].status, 'idle');
       await wc.executeJavaScript('window.hubSmokeButtons[0] = false; window.hubSmokeButtons[1] = true');
       await until(() => wc.executeJavaScript('!document.querySelector(".moonlight-library")'));
+      await wc.executeJavaScript('window.hubSmokeButtons[0] = false; window.hubSmokeButtons[1] = false');
+      fakeUpdatePort.emit('error', new Error('Update server temporarily offline'));
+      await until(() => wc.executeJavaScript('document.querySelector(".update-button")?.textContent.includes("Retry update")'));
+      await wc.executeJavaScript('document.querySelector(".update-button").click()');
+      await until(async () => (await wc.executeJavaScript('window.ubuntuHub.getUpdateState()')).status === 'idle');
+      fakeUpdatePort.emit('update-available', { version: '0.2.0' });
+      await until(() => wc.executeJavaScript('document.querySelector(".update-status").textContent.includes("40%")'));
+      fakeUpdatePort.emit('update-downloaded', { version: '0.2.0' });
+      await until(() => wc.executeJavaScript('document.querySelector(".update-button")?.textContent.includes("Restart to update")'));
+      assert.equal((await wc.executeJavaScript('window.ubuntuHub.launch("terminal")')).ok, true);
+      assert.equal((await wc.executeJavaScript('window.ubuntuHub.getUpdateState()')).canInstall, false);
+      await wc.executeJavaScript('document.querySelector(".update-button").click()');
+      await until(() => wc.executeJavaScript('document.querySelector(".feedback").textContent.includes("Close your running apps")'));
+      assert.equal(fakeUpdatePort.installs, 0, 'An update must never interrupt a managed app');
+      await until(async () => (await wc.executeJavaScript('window.ubuntuHub.getUpdateState()')).canInstall);
+      await wc.executeJavaScript('document.querySelector(".update-button").focus()');
+      await until(() => wc.executeJavaScript(`(() => {
+        const button = document.querySelector('.update-button');
+        const bounds = button.getBoundingClientRect();
+        return Number(getComputedStyle(button).opacity) >= .99 && bounds.left >= 0 && bounds.right <= innerWidth;
+      })()`));
+      writeFileSync(path.join(root, 'docs', 'update-ready.png'), (await wc.capturePage()).toPNG());
+      await wc.executeJavaScript('window.hubSmokeButtons[0] = true');
+      await until(() => fakeUpdatePort.installs === 1);
+      assert.equal((await wc.executeJavaScript('window.ubuntuHub.launch("terminal")')).ok, false, 'New apps must not start during an update restart');
+      assert.equal((await wc.executeJavaScript('window.ubuntuHub.launchMoonlight("moonlight", "hades")')).ok, false);
+      fakeUpdatePort.emit('error', new Error('Simulated installation failure'));
+      await until(() => wc.executeJavaScript('!!document.querySelector(".update-button")'));
+      assert.equal((await wc.executeJavaScript('window.ubuntuHub.getUpdateState()')).status, 'ready');
       passed = true;
-      console.log('PASS: launcher/web lifecycle, Moonlight library, manual/discovered games, exact stream arguments, duplicate lock, offline and stream errors, stream return, controller A/B and held-button protection');
+      console.log('PASS: launcher/Moonlight lifecycle and controller input; update retry, download progress, controller restart, game-session blocking and install failure recovery');
     })().catch(error => { console.error(error); process.exitCode = 1; }).finally(() => app.quit());
   });
 });
 app.on('will-quit', () => { rmSync(temp, { recursive: true, force: true }); });
-const watchdog = setTimeout(() => { console.error('Electron smoke test timed out'); app.exit(1); }, 25000);
+const watchdog = setTimeout(() => { console.error('Electron smoke test timed out'); app.exit(1); }, 45000);
 watchdog.unref();
 // Main normally exits 0 after process cleanup; preserve failure from this harness.
 const originalExit = app.exit.bind(app);
 app.exit = code => originalExit(passed ? code : 1);
+// Inject only in this external test harness, never via an application env flag
+// or renderer IPC. No network download or executable replacement happens here.
+const { EventEmitter } = require('node:events');
+const fakeUpdatePort = new EventEmitter();
+fakeUpdatePort.installs = 0;
+fakeUpdatePort.checkForUpdates = async () => { fakeUpdatePort.emit('update-not-available'); };
+fakeUpdatePort.downloadUpdate = async () => { fakeUpdatePort.emit('download-progress', { percent: 40 }); };
+fakeUpdatePort.quitAndInstall = () => { fakeUpdatePort.installs++; };
+if (!captureOnly) {
+  const { UpdateManager } = require('../dist-electron/electron/update-manager.js');
+  const bootstrap = require('../dist-electron/electron/updater.js');
+  bootstrap.createUpdates = async options => new UpdateManager({
+    currentVersion: '0.1.0', port: fakeUpdatePort, changed: options.changed,
+    isBusy: options.isBusy, beforeInstall: async () => {}, installFailed: () => {},
+  });
+}
 require('../dist-electron/electron/main.js');

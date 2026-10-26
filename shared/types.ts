@@ -33,11 +33,23 @@ export interface AppConfig extends Omit<AppTile, 'status' | 'error'> {
   moonlight?: MoonlightConfig;
 }
 export type Result = { ok: true } | { ok: false; error: string };
+export interface UpdateState {
+  status: 'disabled' | 'idle' | 'checking' | 'downloading' | 'ready' | 'installing' | 'error';
+  currentVersion: string;
+  version?: string;
+  progress?: number;
+  message?: string;
+  canInstall: boolean;
+}
 export interface HubAPI {
   listApps(): Promise<AppTile[]>;
   launch(id: string): Promise<Result>;
   moonlightLibrary(id: string, refresh?: boolean): Promise<MoonlightLibraryResult>;
   launchMoonlight(id: string, gameId: string): Promise<Result>;
   returnToLauncher(): Promise<Result>;
+  getUpdateState(): Promise<UpdateState>;
+  checkForUpdates(): Promise<Result>;
+  installUpdate(): Promise<Result>;
+  onUpdateChanged(callback: (state: UpdateState) => void): () => void;
   onAppsChanged(callback: (apps: AppTile[]) => void): () => void;
 }

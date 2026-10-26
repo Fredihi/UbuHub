@@ -16,7 +16,8 @@
     "test": "tsx --test tests/*.test.ts",
     "test:electron": "node scripts/electron-smoke.cjs",
     "dist:linux": "node scripts/check-linux-build.cjs && npm run build && electron-builder --linux AppImage deb",
-    "dist:linux:deb": "node scripts/check-linux-build.cjs && npm run build && electron-builder --linux deb"
+    "dist:linux:deb": "node scripts/check-linux-build.cjs && npm run build && electron-builder --linux deb",
+    "dist:linux:release": "node scripts/check-linux-build.cjs && node scripts/validate-release.cjs && npm run build && electron-builder --config build/github-release.cjs --linux AppImage deb --x64 --publish never && node scripts/verify-release.cjs"
   },
   "dependencies": {
     "electron-updater": "^6.8.11",
@@ -36,7 +37,8 @@
     "tailwindcss": "^4.1.0",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0",
-    "wait-on": "^8.0.0"
+    "wait-on": "^8.0.0",
+    "yaml": "^2.9.1"
   },
   "build": {
     "appId": "io.ubuntuhub.launcher",

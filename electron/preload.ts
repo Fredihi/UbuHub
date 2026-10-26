@@ -6,6 +6,14 @@ const api: HubAPI = {
   moonlightLibrary: (id, refresh = false) => ipcRenderer.invoke('hub:moonlight-library', id, refresh),
   launchMoonlight: (id, gameId) => ipcRenderer.invoke('hub:moonlight-launch', id, gameId),
   returnToLauncher: () => ipcRenderer.invoke('hub:return'),
+  getUpdateState: () => ipcRenderer.invoke('hub:update-state'),
+  checkForUpdates: () => ipcRenderer.invoke('hub:update-check'),
+  installUpdate: () => ipcRenderer.invoke('hub:update-install'),
+  onUpdateChanged: callback => {
+    const listener = (_event: Electron.IpcRendererEvent, state: import('../shared/types').UpdateState) => callback(state);
+    ipcRenderer.on('hub:update', listener);
+    return () => ipcRenderer.removeListener('hub:update', listener);
+  },
   onAppsChanged: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, apps: AppTile[]) => callback(apps);
     ipcRenderer.on('hub:apps', listener);

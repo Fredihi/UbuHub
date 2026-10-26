@@ -1,0 +1,61 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Validate public repository and release tag
+        env:
+          REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
+        run: node scripts/validate-release.cjs
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential libopenjp2-tools libgtk-3-0 libnss3 libasound2 libgbm1 libatk-bridge2.0-0 libxss1 libxtst6 xvfb xauth
+      - run: npm ci
+      - run: npm test
+      - run: npm run dist:linux:release
+      - run: npm run typecheck
+      - run: xvfb-run -a npm run test:electron
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-release
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            release/*.AppImage
+            release/*.deb
+            release/*.blockmap
+            release/latest-linux.yml
+  publish:
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-release
+          path: release
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" release/* --verify-tag --title "UbuntuHub $RELEASE_TAG" --generate-notes --latest

@@ -95,6 +95,8 @@ The command/args fields also support Flatpak and AppImage: command-prefix argume
 
 ## Build and install
 
+For ongoing updates, use **GitHub Releases and the AppImage**, described below. GitHub builds the Linux files for you; a local WSL build is optional. The `.deb` installer remains available for normal package installation and manual upgrades.
+
 ```bash
 npm run typecheck
 npm test
@@ -140,6 +142,54 @@ Open `release` in the Explorer window and copy the generated `.deb` to your Ubun
 
 The `release/` directory also contains an AppImage. Mark it executable and run it from your desktop session. AppImage may require `libfuse2` (22.04) or `libfuse2t64` (24.04+); the `.deb` avoids the AppImage FUSE requirement. Keep Electron's sandbox enabled. This is a regular desktop launcher, not a replacement display manager or a Wayland compositor. Optional login startup can be configured through Ubuntu's Startup Applications using the installed `ubuntuhub` executable.
 
+## GitHub Releases and in-app updates
+
+### One-time repository setup
+
+Create a **public GitHub repository** and push this project, including `.github/workflows`, `build`, and `package-lock.json`. No repository URL needs to be hardcoded: the release build derives the owner/name from GitHub's `GITHUB_REPOSITORY` environment variable and embeds the public release feed in the AppImage. `"private": true` in package.json only prevents npm publishing; it does not make the GitHub repository private. This workflow rejects private GitHub repositories, since the installed app is designed to download updates without credentials.
+
+`ci.yml` builds and tests branch pushes and pull requests. `release.yml` runs for version tags, builds x64 Linux AppImage and DEB artifacts on Ubuntu, verifies metadata/checksums, and runs the Electron integration tests. A separate job publishes the GitHub Release only after those checks pass. GitHub supplies the publishing token automatically with `contents: write` in that job; no personal access token needs to be placed in the app or configured as a repository secret.
+
+For the first release (the current version is 0.1.0), commit and push your code, then push its matching tag:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Watch **Actions → Release** in GitHub. When it succeeds, **Releases** contains `UbuntuHub-x64.AppImage`, a `.deb`, `latest-linux.yml`, and any generated blockmap. Leave the update metadata and binaries together in the published release. Draft releases, prereleases and version downgrades are not used by this updater.
+
+### First installation on the Ubuntu PC
+
+Download `UbuntuHub-x64.AppImage` from your GitHub Release. Put it in a folder owned by your Linux user and keep that path stable:
+
+```bash
+mkdir -p ~/Applications
+cp ~/Downloads/UbuntuHub-x64.AppImage ~/Applications/UbuntuHub-x64.AppImage
+chmod +x ~/Applications/UbuntuHub-x64.AppImage
+~/Applications/UbuntuHub-x64.AppImage
+```
+
+Use that AppImage path for any desktop shortcut or login-startup entry. The file and its containing directory must both be writable so the updater can replace it. Run it as your normal desktop user. A previously installed DEB can remain installed, but launch the AppImage rather than the DEB's application-menu entry to get in-app updates. Existing configuration remains in `~/.config/UbuntuHub/apps.json`; new bundled defaults do not overwrite it.
+
+### Publishing an update
+
+Commit your changes. In your Git checkout on Windows, increase the version and push the new commit/tag. For example, upgrading 0.1.0 to 0.1.1:
+
+```bash
+npm version patch
+git push origin HEAD
+git push origin v0.1.1
+```
+
+`npm version` updates both package.json and package-lock.json. The release workflow requires the tag to match the version exactly, so use the newly generated tag for subsequent releases. You do not need to build locally, transfer source files or reinstall on the Ubuntu PC.
+
+The released AppImage checks for updates 15 seconds after startup and every six hours. Available updates download in the background, with progress shown in the footer. A **Restart to update** tile appears in the launcher and Moonlight library; select it with left/right and A/Enter, or click it. Installation is refused while any managed application is starting/running. Close those apps or disconnect Moonlight first, then select the action again. New launches are blocked during the update restart, and the replacement instance can take over the single-instance lock. Updates are never installed automatically on ordinary app exit.
+
+Offline checks and download failures leave the launcher usable and offer **Retry update**. Installation errors keep the update available for retry. Settings stay separate from the executable. SHA512 verification of downloaded files is handled by electron-updater; the release workflow independently checks the generated artifact hash and embedded repository identity before publishing.
+
+Automatic updates are disabled in development, non-Linux builds, DEB installs, AppImages without an embedded release feed, and read-only AppImage locations. Ordinary `dist:linux` builds have no feed; GitHub uses `dist:linux:release` with the repository/tag environment provided automatically. End-to-end download/replacement must be validated with two real GitHub releases on Ubuntu; local tests use a fake updater and never replace an executable or contact your GitHub account.
+
 Development is possible on Windows/macOS, but example native commands and process-group management target Linux. Windows shell scripts such as `npm.cmd` are not directly executable with the shell-free launcher; validate local process launching on Ubuntu.
 
 ## Structure
@@ -152,11 +202,15 @@ lib/use-controller.ts         Gamepad polling and keyboard input
 shared/types.ts               Renderer-safe IPC contracts
 electron/config.ts            JSON validation and path resolution
 electron/moonlight.ts          Moonlight CLI discovery, game IDs and stream arguments
+electron/update-manager.ts    Update state, download/retry and safe restart gating
+electron/updater.ts           Released AppImage updater initialization
 electron/process-manager.ts   Process lifecycle, readiness and cleanup
 electron/main.ts              Windows, protocol, IPC and OS integration
 electron/preload.ts           Narrow context-isolated bridge
 config/apps.json              Editable application list (Moonlight and Steam)
 tests/                        Configuration, repeat and process tests
+.github/workflows/            CI checks and tag-triggered GitHub Releases
+build/github-release.cjs      Automatic GitHub release feed configuration
 ```
 
 Renderer Node integration is disabled. Both window types use context isolation and Chromium sandboxing. App windows have no preload or IPC access; the launcher bridge accepts app IDs, never renderer-supplied commands. IPC checks the sender window, main frame and URL. Popups, cross-origin navigation and permission requests are blocked. The production CSP permits inline scripts for Next.js hydration but disallows eval, frames and external network connections.

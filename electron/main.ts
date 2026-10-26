@@ -5,6 +5,8 @@ import { copyFile, access } from 'node:fs/promises';
 import { loadConfig } from './config';
 import { ProcessManager } from './process-manager';
 import { MoonlightIntegration } from './moonlight';
+import { createUpdates } from './updater';
+import type { UpdateManager } from './update-manager';
 import type { AppConfig } from '../shared/types';
 
 const dev = !app.isPackaged && process.env.UBUNTUHUB_DEV === '1';
@@ -13,6 +15,8 @@ protocol.registerSchemesAsPrivileged([{ scheme: 'ubuntuhub', privileges: { stand
 let launcher: BrowserWindow;
 let manager: ProcessManager;
 let moonlight: MoonlightIntegration;
+let updates: UpdateManager;
+let installingUpdate = false;
 const windows = new Map<string, BrowserWindow>();
 let quitting = false;
 
@@ -76,11 +80,26 @@ else {
     }
     const configs = await loadConfig(configPath);
     moonlight = new MoonlightIntegration(configs);
-    manager = new ProcessManager(configs, () => { if (launcher && !launcher.isDestroyed()) launcher.webContents.send('hub:apps', manager.list()); }, id => {
+    manager = new ProcessManager(configs, () => { if (launcher && !launcher.isDestroyed()) launcher.webContents.send('hub:apps', manager.list()); updates?.refresh(); }, id => {
       windows.get(id)?.close(); restore();
     });
     launcher = new BrowserWindow({ fullscreen: true, frame: false, backgroundColor: '#101113', show: false, webPreferences: { preload: path.join(__dirname, 'preload.js'), nodeIntegration: false, contextIsolation: true, sandbox: true } });
     lockWindow(launcher, launcherURL);
+    updates = await createUpdates({
+      packaged: app.isPackaged, platform: process.platform, appImage: process.env.APPIMAGE,
+      resourcesPath: process.resourcesPath, version: app.getVersion(),
+      changed: state => { if (!launcher.isDestroyed()) launcher.webContents.send('hub:update', state); },
+      isBusy: () => manager.list().some(item => item.status === 'starting' || item.status === 'running'),
+      beforeInstall: async () => {
+        moonlight.dispose();
+        installingUpdate = true;
+        // AppImageUpdater starts the replacement before quitting this process.
+        app.releaseSingleInstanceLock();
+      },
+      installFailed: () => {
+        if (installingUpdate) { installingUpdate = false; if (!app.requestSingleInstanceLock()) app.quit(); }
+      }
+    });
     const trusted = (event: Electron.IpcMainInvokeEvent) => {
       if (event.sender !== launcher.webContents || event.senderFrame !== launcher.webContents.mainFrame || event.senderFrame.url !== launcherURL) throw new Error('Untrusted IPC sender.');
     };
@@ -88,6 +107,7 @@ else {
     ipcMain.handle('hub:launch', async (event, id: unknown) => {
       trusted(event);
       if (typeof id !== 'string') return { ok: false, error: 'Invalid application ID.' };
+      if (updates.snapshot().status === 'installing') return { ok: false, error: 'UbuntuHub is restarting to install an update.' };
       if (moonlight.isLoading(id)) return { ok: false, error: 'Wait for the game list to finish refreshing.' };
       const result = await manager.launch(id, openWeb);
       if (result.ok && configs.find(a => a.id === id)?.type === 'native' && manager.list().find(a => a.id === id)?.status === 'running') launcher.minimize();
@@ -105,6 +125,7 @@ else {
     ipcMain.handle('hub:moonlight-launch', async (event, id: unknown, gameId: unknown) => {
       trusted(event);
       if (typeof id !== 'string' || typeof gameId !== 'string') return { ok: false, error: 'Invalid game request.' };
+      if (updates.snapshot().status === 'installing') return { ok: false, error: 'UbuntuHub is restarting to install an update.' };
       try {
         const result = await manager.launch(id, openWeb, moonlight.streamArgs(id, gameId));
         if (result.ok && manager.list().some(item => item.id === id && item.status === 'running')) launcher.minimize();
@@ -112,15 +133,21 @@ else {
       } catch (error) { return { ok: false, error: error instanceof Error ? error.message : 'Could not start stream.' }; }
     });
     ipcMain.handle('hub:return', event => { trusted(event); restore(); return { ok: true }; });
+    ipcMain.handle('hub:update-state', event => { trusted(event); return updates.snapshot(); });
+    ipcMain.handle('hub:update-check', event => { trusted(event); return updates.check(); });
+    ipcMain.handle('hub:update-install', event => { trusted(event); return updates.install(); });
     launcher.on('closed', () => app.quit());
     await launcher.loadURL(launcherURL);
     launcher.show();
+    updates.start();
   }).catch(error => { dialog.showErrorBox('UbuntuHub could not start', String(error)); app.quit(); });
 }
 app.on('before-quit', event => {
   if (quitting) return;
   quitting = true;
+  updates?.dispose();
   moonlight?.dispose();
+  if (installingUpdate) return; // Let electron-updater complete its normal quit/relaunch path.
   if (manager) {
     event.preventDefault();
     manager.stopAll();
