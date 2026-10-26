@@ -2,18 +2,34 @@ name: Release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing version tag to release (for example v0.1.0)'
+        required: true
+        type: string
 permissions:
   contents: read
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 jobs:
   build:
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     steps:
+      - name: Validate release tag input
+        shell: bash
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Choose a stable version tag such as v0.1.0."
+            exit 1
+          fi
       - uses: actions/checkout@v7
         with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
@@ -22,14 +38,16 @@ jobs:
       - name: Validate public repository and release tag
         env:
           REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
-        run: node scripts/validate-release.cjs
+        # Manual dispatch runs the workflow from main, but builds the selected
+        # tag. Pass that tag to scripts, including scripts from older tags.
+        run: GITHUB_REF_NAME="$RELEASE_TAG" node scripts/validate-release.cjs
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential libopenjp2-tools libgtk-3-0 libnss3 libasound2 libgbm1 libatk-bridge2.0-0 libxss1 libxtst6 xvfb xauth
       - run: npm ci
       - run: npm test
-      - run: npm run dist:linux:release
+      - run: GITHUB_REF_NAME="$RELEASE_TAG" npm run dist:linux:release
       - run: npm run typecheck
       - run: xvfb-run -a npm run test:electron
       - uses: actions/upload-artifact@v4
@@ -56,6 +74,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           gh release create "$RELEASE_TAG" release/* --verify-tag --title "UbuntuHub $RELEASE_TAG" --generate-notes --latest

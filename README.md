@@ -159,6 +159,8 @@ git push origin v0.1.0
 
 Watch **Actions → Release** in GitHub. When it succeeds, **Releases** contains `UbuntuHub-x64.AppImage`, a `.deb`, `latest-linux.yml`, and any generated blockmap. Leave the update metadata and binaries together in the published release. Draft releases, prereleases and version downgrades are not used by this updater.
 
+If the tag already exists but no Release run started, pushing the branch or pushing an unchanged tag does not create another tag-push event. You can recover without changing the tag: once the latest workflow is on your default branch, open **Actions → Release → Run workflow**, select the default branch, enter the existing tag (for example `v0.1.0`), and run it. The workflow builds the code at that tag and validates its package version, rather than packaging the current default branch. The `publish` job is part of **Release** and starts only after its `build` job succeeds; it is separate from the ordinary **Checks** workflow. Future newly pushed `v*` tags still start automatically.
+
 ### First installation on the Ubuntu PC
 
 Download `UbuntuHub-x64.AppImage` from your GitHub Release. Put it in a folder owned by your Linux user and keep that path stable:

@@ -24,10 +24,15 @@ test('workflows parse and publishing receives artifacts only after the build job
   const release = parse(readFileSync('.github/workflows/release.yml', 'utf8'));
   assert.ok(ci.on.pull_request === null);
   assert.deepEqual(release.on.push.tags, ['v*']);
+  assert.equal(release.on.workflow_dispatch.inputs.tag.required, true);
+  assert.equal(release.env.RELEASE_TAG, '${{ inputs.tag || github.ref_name }}');
   assert.equal(release.permissions.contents, 'read');
   assert.equal(release.jobs.publish.needs, 'build');
   assert.equal(release.jobs.publish.permissions.contents, 'write');
-  assert.ok(release.jobs.build.steps.some((step: { run?: string }) => step.run === 'npm run dist:linux:release'));
+  const checkout = release.jobs.build.steps.find((step: { uses?: string }) => step.uses?.startsWith('actions/checkout@'));
+  assert.equal(checkout.with.ref, 'refs/tags/${{ env.RELEASE_TAG }}', 'Manual release must build the tagged code, not the default branch');
+  assert.ok(release.jobs.build.steps.some((step: { run?: string }) => step.run === 'GITHUB_REF_NAME="$RELEASE_TAG" npm run dist:linux:release'));
+  assert.ok(release.jobs.build.steps.some((step: { run?: string }) => step.run === 'GITHUB_REF_NAME="$RELEASE_TAG" node scripts/validate-release.cjs'));
   assert.ok(!JSON.stringify(release.jobs.build).includes('GH_TOKEN'));
 });
 test('release verification checks real artifact hashes and the embedded feed identity', async () => {
