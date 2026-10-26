@@ -1,0 +1,17 @@
+[
+  {
+    "id": "moonlight", "name": "Moonlight", "subtitle": "Stream your games",
+    "icon": "moon", "color": "#a89cff", "type": "native",
+    "command": "moonlight", "args": [], "cwd": "~",
+    "moonlight": {
+      "host": "192.168.1.135",
+      "games": [],
+      "streamArgs": ["--display-mode", "fullscreen", "--no-quit-after"]
+    }
+  },
+  {
+    "id": "steam", "name": "Steam", "subtitle": "Your game library",
+    "icon": "steam", "color": "#79bfff", "type": "native",
+    "command": "steam", "args": [], "cwd": "~"
+  }
+]
