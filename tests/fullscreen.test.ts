@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fullscreenMoonlightIni, fullscreenStreamArgs, moonlightSettingsFile, nativeLaunchArgs, writeMoonlightFullscreen } from '../electron/fullscreen';
 import { ProcessManager } from '../electron/process-manager';
+import { readyImmediately } from './fixtures/readiness';
 import { parseConfig } from '../electron/config';
 import type { AppConfig } from '../shared/types';
 const steam: AppConfig = { id: 'steam', name: 'Steam', subtitle: '', icon: 'steam', color: '#79bfff', type: 'native', command: 'steam', args: [], cwd: process.cwd() };
@@ -60,7 +61,7 @@ test('process manager sends fullscreen Steam arguments to a tracked executable',
   const file = path.join(directory, 'arguments.json');
   const script = path.join(directory, 'steam.cjs');
   await writeFile(script, `require('fs').writeFileSync(${JSON.stringify(file)}, JSON.stringify(process.argv.slice(2))); setTimeout(() => {}, 100);`);
-  const manager = new ProcessManager([{ ...steam, command: process.execPath, args: [script], cwd: directory }], () => {}, () => {});
+  const manager = new ProcessManager([{ ...steam, command: process.execPath, args: [script], cwd: directory }], () => {}, () => {}, readyImmediately);
   try {
     assert.equal((await manager.launch('steam', async () => {})).ok, true);
     const deadline = Date.now() + 5000;
@@ -69,7 +70,7 @@ test('process manager sends fullscreen Steam arguments to a tracked executable',
   } finally { manager.stopAll(); await rm(directory, { recursive: true, force: true }); }
 });
 test('shutdown cancels a pending fullscreen preparation instead of spawning an orphan process', async () => {
-  const manager = new ProcessManager([{ ...steam, id: 'other', command: process.execPath, args: ['-e', 'process.exit(99)'] }], () => {}, () => {});
+  const manager = new ProcessManager([{ ...steam, id: 'other', command: process.execPath, args: ['-e', 'process.exit(99)'] }], () => {}, () => {}, readyImmediately);
   const launching = manager.launch('other', async () => {});
   manager.stopAll();
   assert.equal((await launching).ok, false);

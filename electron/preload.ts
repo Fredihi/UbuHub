@@ -3,6 +3,7 @@ import type { AppTile, HubAPI } from '../shared/types';
 const api: HubAPI = {
   listApps: () => ipcRenderer.invoke('hub:list'),
   launch: (id) => ipcRenderer.invoke('hub:launch', id),
+  cancelLaunch: id => ipcRenderer.invoke('hub:cancel-launch', id),
   moonlightLibrary: (id, refresh = false) => ipcRenderer.invoke('hub:moonlight-library', id, refresh),
   launchMoonlight: (id, gameId) => ipcRenderer.invoke('hub:moonlight-launch', id, gameId),
   returnToLauncher: () => ipcRenderer.invoke('hub:return'),

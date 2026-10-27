@@ -1,9 +1,10 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { AppTile, HubAPI } from '../shared/types';
+import type { AppTile, HubAPI, MoonlightLibrary } from '../shared/types';
 import { useController } from '../lib/use-controller';
 import { MoonlightLibraryView } from './moonlight-library';
 import { useUpdates } from '../lib/use-updates';
+import { LaunchScreen } from './launch-screen';
 
 declare global { interface Window { ubuntuHub?: HubAPI } }
 const preview: AppTile[] = [
@@ -23,6 +24,8 @@ export default function Home() {
   const [message, setMessage] = useState('');
   const [visible, setVisible] = useState(true);
   const [libraryAppId, setLibraryAppId] = useState<string | null>(null);
+  const [moonlightLibraries, setMoonlightLibraries] = useState<Record<string, MoonlightLibrary>>({});
+  const [pendingApp, setPendingApp] = useState<AppTile | null>(null);
   const update = useUpdates();
   const itemCount = apps.length + (update.actionLabel ? 1 : 0);
   const launching = useRef(false);
@@ -32,7 +35,22 @@ export default function Home() {
     if (!api) return;
     let live = true;
     const unsubscribe = api.onAppsChanged(next => { if (live) setApps(next); });
-    api.listApps().then(next => { if (live) setApps(next); }).catch(() => setMessage('Unable to load apps. Restart UbuntuHub to try again.'));
+    api.listApps().then(next => {
+      if (!live) return;
+      setApps(next);
+      for (const application of next) if (application.integration === 'moonlight') {
+        // Join the main process's startup discovery before the library is opened.
+        void api.moonlightLibrary(application.id).then(result => {
+          if (!live || !result.ok) return;
+          setMoonlightLibraries(previous => ({ ...previous, [application.id]: result.library }));
+          // Warm the first screen of covers in Chromium's cache as well.
+          for (const game of result.library.games.slice(0, 8)) if (game.artwork) {
+            const image = new Image();
+            image.src = game.artwork;
+          }
+        }).catch(() => { /* Opening the library retries a failed preload. */ });
+      }
+    }).catch(() => setMessage('Unable to load apps. Restart UbuntuHub to try again.'));
     return () => { live = false; unsubscribe(); };
   }, []);
   const move = useCallback((direction: number) => {
@@ -53,15 +71,16 @@ export default function Home() {
     if (app.integration === 'moonlight') { setMessage(''); setLibraryAppId(app.id); return; }
     if (!window.ubuntuHub) { setMessage('Open UbuntuHub in Electron to launch your applications.'); return; }
     launching.current = true;
+    setPendingApp(app);
     setMessage('');
     try {
       const result = await window.ubuntuHub.launch(app.id);
       if (!result.ok) setMessage(result.error);
     } catch { setMessage('Could not reach the launcher. Restart UbuntuHub to try again.'); }
-    finally { launching.current = false; }
+    finally { launching.current = false; setPendingApp(null); }
   }, [apps, selected, update.actionLabel, update.act]);
   const back = useCallback(() => { setMessage(''); void window.ubuntuHub?.returnToLauncher(); }, []);
-  const connected = useController(move, () => void launch(), back, libraryAppId === null);
+  const connected = useController(move, () => void launch(), back, libraryAppId === null && !pendingApp);
   useEffect(() => {
     const update = () => setVisible(!document.hidden);
     update();
@@ -85,7 +104,7 @@ export default function Home() {
         <div className="brand"><span className="brand-symbol" aria-hidden="true">u<span>•</span></span><span>ubuntu<span className="font-normal text-[#9b9ca3]">hub</span></span></div>
         <div className="connection"><span className={connected ? 'status-dot online' : 'status-dot'} />{libraryApp ? 'Moonlight library' : connected ? 'Controller connected' : 'Keyboard ready'}</div>
       </header>
-      {libraryApp ? <MoonlightLibraryView application={libraryApp} onBack={() => setLibraryAppId(null)} update={update} /> : <section className="library relative flex flex-1 flex-col justify-center" aria-label="Application launcher">
+      {libraryApp ? <MoonlightLibraryView application={libraryApp} initialLibrary={moonlightLibraries[libraryApp.id]} onBack={() => setLibraryAppId(null)} update={update} /> : <section className="library relative flex flex-1 flex-col justify-center" aria-label="Application launcher">
         {/* <div className="section-heading"><span>YOUR APPLICATIONS</span><span className="count">{String(selected + 1).padStart(2, '0')} <span>/ {String(apps.length).padStart(2, '0')}</span></span></div> */}
         <div className="tile-track" role="group" aria-label="Applications">
           {apps.map((app, index) => <button
@@ -112,6 +131,7 @@ export default function Home() {
       <footer className="relative flex items-center justify-between px-[6vw] pb-[4vh]">
         <span className="update-status" role="status">{update.state?.status === 'downloading' ? `Downloading update · ${update.state.progress ?? 0}%` : update.state?.status === 'checking' ? 'Checking for updates…' : update.state?.status === 'installing' ? 'Restarting UbuntuHub…' : update.state?.status === 'ready' ? `Update ready · v${update.state.version}` : ''}</span>
       </footer>
+      {pendingApp && <LaunchScreen id={pendingApp.id} name={pendingApp.name} color={pendingApp.color} />}
     </main>
   );
 }

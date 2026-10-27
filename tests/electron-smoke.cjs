@@ -1,6 +1,6 @@
 // Run with Electron after `npm run build`. Uses temporary, platform-neutral apps.
-const { app, BrowserWindow } = require('electron');
-const { mkdtempSync, readFileSync, writeFileSync, mkdirSync, rmSync } = require('node:fs');
+const { app, BrowserWindow, ipcMain } = require('electron');
+const { mkdtempSync, readFileSync, writeFileSync, mkdirSync, rmSync, existsSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -17,6 +17,7 @@ const base = { color: '#a89cff', cwd: root, type: 'native', command: process.exe
 const node = process.env.SMOKE_NODE || 'node';
 const moonlightFixture = path.join(temp, 'moonlight.cjs');
 const streamArguments = path.join(temp, 'stream-args.json');
+const discoveryMarker = path.join(temp, 'library-discovered');
 const hostOffline = path.join(temp, 'host-offline');
 const streamFailure = path.join(temp, 'stream-failure');
 const covers = path.join(process.env.XDG_CACHE_HOME, 'Moonlight/boxart/host-one');
@@ -29,19 +30,20 @@ const csv = [
   'Name, ID, HDR Support, App Collection Game, Hidden, Direct Launch, Boxart URL',
   `"Steam Big Picture",100,false,false,false,false,"${pathToFileURL(path.join(covers, '100.png')).href}"`,
   `"Hades II",200,false,false,false,false,"${pathToFileURL(path.join(covers, '200.png')).href}"`,
-  `"Game with spaces",300,false,false,false,false,"${pathToFileURL(path.join(covers, '300.png')).href}"`,
+  `"A game with a much longer title that wraps across several lines",300,false,false,false,false,"${pathToFileURL(path.join(covers, '300.png')).href}"`,
 ].join('\n');
 writeFileSync(moonlightFixture, `
   const fs = require('fs');
   const args = process.argv.slice(2);
   if (args[0] === 'list') {
+    fs.writeFileSync(${JSON.stringify(discoveryMarker)}, 'discovered');
     if (fs.existsSync(${JSON.stringify(hostOffline)})) { console.error('Host offline'); process.exit(1); }
     console.log(args.includes('--csv') ? ${JSON.stringify(csv)} : 'Steam Big Picture\\nHades II\\nGame with spaces');
   } else if (args[0] === 'stream') {
     fs.writeFileSync(${JSON.stringify(streamArguments)}, JSON.stringify(args));
     if (fs.existsSync(${JSON.stringify(streamFailure)})) { console.error('Stream connection failed'); process.exit(3); }
-    setTimeout(() => {}, 850);
-  } else setTimeout(() => {}, 350);
+    setTimeout(() => {}, 1800);
+  } else setTimeout(() => {}, 1500);
 `);
 writeFileSync(process.env.UBUNTUHUB_CONFIG, JSON.stringify([
   { ...base, id: 'terminal', name: 'Terminal', subtitle: 'Your command center', icon: 'terminal', command: node, args: ['-e', 'setTimeout(() => {}, 1500)'] },
@@ -53,6 +55,7 @@ const captureOnly = process.argv.includes('--capture');
 if (captureOnly) process.env.UBUNTUHUB_CONFIG = path.join(root, 'config', 'apps.json');
 let started = false;
 let passed = false;
+let libraryReads = 0;
 const delay = ms => new Promise(r => setTimeout(r, ms));
 async function until(check) { const end = Date.now() + 6000; while (!await check() && Date.now() < end) await delay(50); assert.ok(await check()); }
 app.on('browser-window-created', (_event, win) => {
@@ -98,6 +101,9 @@ app.on('browser-window-created', (_event, win) => {
       await delay(500);
       assert.equal(await wc.executeJavaScript('typeof require'), 'undefined');
       assert.equal((await wc.executeJavaScript('window.ubuntuHub.listApps()')).length, 4);
+      await until(() => existsSync(discoveryMarker));
+      await until(() => libraryReads > 0);
+      assert.equal(await wc.executeJavaScript('!!document.querySelector(".moonlight-library")'), false, 'Game discovery starts before opening the library');
       wc.sendInputEvent({ type: 'keyDown', keyCode: 'Right' });
       wc.sendInputEvent({ type: 'keyUp', keyCode: 'Right' });
       await delay(100);
@@ -108,13 +114,26 @@ app.on('browser-window-created', (_event, win) => {
       const failed = await wc.executeJavaScript('window.ubuntuHub.launch("files")');
       assert.equal(failed.ok, false);
       assert.match(failed.error, /ENOENT/);
-      const native = await wc.executeJavaScript('window.ubuntuHub.launch("terminal")');
-      assert.equal(native.ok, true);
+      await wc.executeJavaScript('Array.from(document.querySelectorAll(".app-button")).find(b => b.textContent.includes("Terminal")).click()');
+      await until(() => wc.executeJavaScript('!!document.querySelector(".launch-screen")'));
+      assert.equal(await wc.executeJavaScript('document.querySelector(".launch-screen h1").textContent'), 'Terminal');
+      assert.equal(win.isAlwaysOnTop(), true);
+      await delay(150); // Allow Chromium to paint the newly mounted overlay.
+      writeFileSync(path.join(root, 'docs', 'launch-loading.png'), (await wc.capturePage()).toPNG());
+      await until(async () => (await wc.executeJavaScript('window.ubuntuHub.listApps()'))[0].status === 'running');
+      await until(() => wc.executeJavaScript('!document.querySelector(".launch-screen")'));
+      assert.equal(win.isAlwaysOnTop(), false);
       const duplicate = await wc.executeJavaScript('window.ubuntuHub.launch("terminal")');
       assert.equal(duplicate.ok, false);
       await until(async () => (await wc.executeJavaScript('window.ubuntuHub.listApps()'))[0].status === 'idle');
       assert.equal(win.isVisible(), true);
       assert.equal(win.isMinimized(), false);
+      await wc.executeJavaScript('Array.from(document.querySelectorAll(".app-button")).find(b => b.textContent.includes("Terminal")).click()');
+      await until(() => wc.executeJavaScript('!!document.querySelector(".launch-screen")'));
+      await wc.executeJavaScript('document.querySelector(".launch-cancel").click()');
+      await until(() => wc.executeJavaScript('!document.querySelector(".launch-screen")'));
+      assert.equal((await wc.executeJavaScript('window.ubuntuHub.listApps()'))[0].status, 'idle');
+      assert.equal(win.isAlwaysOnTop(), false);
       const web = await wc.executeJavaScript('window.ubuntuHub.launch("local-project")');
       assert.equal(web.ok, true);
       const child = BrowserWindow.getAllWindows().find(w => w !== win);
@@ -138,8 +157,13 @@ app.on('browser-window-created', (_event, win) => {
       await gamepadWindow.webContents.executeJavaScriptInIsolatedWorld(999, [{ code: 'window.smokeButton = true;' }]);
       await until(() => gamepadWindow.isDestroyed());
       await until(async () => (await wc.executeJavaScript('window.ubuntuHub.listApps()'))[2].status === 'idle');
+      const startupLibraryReads = libraryReads;
       await wc.executeJavaScript('Array.from(document.querySelectorAll(".app-button")).find(b => b.textContent.includes("Moonlight")).click()');
-      await until(() => wc.executeJavaScript('document.querySelectorAll(".game-button").length === 1'));
+      await until(() => wc.executeJavaScript('document.querySelectorAll(".game-button").length === 3'));
+      assert.equal(libraryReads, startupLibraryReads, 'Opening Moonlight uses the UI preload without another library request');
+      assert.equal(await wc.executeJavaScript('document.querySelector(".game-track").getAttribute("aria-busy")'), 'false', 'Startup-preloaded games are ready when Moonlight opens');
+      assert.equal(await wc.executeJavaScript('Array.from(document.querySelectorAll(".library-utility")).some(b => /Open Moonlight|Refresh games/.test(b.textContent))'), false);
+      await wc.executeJavaScript('Array.from(document.querySelectorAll(".game-button")).find(b => b.textContent.includes("Hades II")).focus()');
       await until(() => wc.executeJavaScript('document.querySelector(".selected .app-name").textContent === "Hades II"'));
       assert.equal((await wc.executeJavaScript('window.ubuntuHub.launchMoonlight("moonlight", "invented")')).ok, false);
       assert.equal((await wc.executeJavaScript('window.ubuntuHub.launchMoonlight({}, [])')).ok, false);
@@ -154,20 +178,24 @@ app.on('browser-window-created', (_event, win) => {
       assert.equal(win.isVisible(), true);
       assert.equal(win.isMinimized(), false);
       assert.equal(await wc.executeJavaScript('!!document.querySelector(".moonlight-library")'), true);
-      await wc.executeJavaScript('Array.from(document.querySelectorAll(".library-utility")).find(b => b.textContent.includes("Refresh games")).click()');
       await until(() => wc.executeJavaScript('document.querySelectorAll(".game-button").length === 3'));
       await until(() => wc.executeJavaScript('document.querySelectorAll(".game-cover").length === 2 && Array.from(document.querySelectorAll(".game-cover")).every(image => image.complete && image.naturalWidth === 200 && image.naturalHeight === 300)'));
       assert.equal(await wc.executeJavaScript('getComputedStyle(document.querySelector(".game-cover")).objectFit'), 'contain');
-      assert.equal(await wc.executeJavaScript('Array.from(document.querySelectorAll(".game-button")).find(button => button.textContent.includes("Game with spaces")).querySelector(".game-cover")'), null);
+      assert.equal(await wc.executeJavaScript('Array.from(document.querySelectorAll(".game-button")).find(button => button.textContent.includes("A game with a much longer title")).querySelector(".game-cover")'), null);
       const previousArtwork = (await wc.executeJavaScript('window.ubuntuHub.moonlightLibrary("moonlight")')).library.games[0].artwork;
       await delay(1200);
+      assert.equal(await wc.executeJavaScript(`(() => {
+        const cards = Array.from(document.querySelectorAll('.game-button'));
+        const tops = cards.map(card => card.getBoundingClientRect().top);
+        const heights = cards.map(card => card.querySelector('.tile-caption').getBoundingClientRect().height);
+        return Math.max(...tops) - Math.min(...tops) < 1 && Math.max(...heights) > Math.min(...heights) + 10;
+      })()`), true, 'Card tops align even when title heights differ');
       writeFileSync(path.join(root, 'docs', 'moonlight-library.png'), (await wc.capturePage()).toPNG());
       writeFileSync(hostOffline, '1');
-      await wc.executeJavaScript('Array.from(document.querySelectorAll(".library-utility")).find(b => b.textContent.includes("Refresh games")).click()');
-      await until(() => wc.executeJavaScript('document.querySelector(".feedback").textContent.includes("Host offline")'));
+      assert.equal((await wc.executeJavaScript('window.ubuntuHub.moonlightLibrary("moonlight", true)')).ok, false);
       assert.equal(await wc.executeJavaScript('document.querySelectorAll(".game-button").length'), 3);
       rmSync(hostOffline);
-      await wc.executeJavaScript('Array.from(document.querySelectorAll(".library-utility")).find(b => b.textContent.includes("Refresh games")).click()');
+      assert.equal((await wc.executeJavaScript('window.ubuntuHub.moonlightLibrary("moonlight", true)')).ok, true);
       await until(async () => (await wc.executeJavaScript('window.ubuntuHub.moonlightLibrary("moonlight")')).library.games[0].artwork !== previousArtwork);
       await until(() => wc.executeJavaScript('Array.from(document.querySelectorAll(".game-cover")).filter(image => image.complete && image.naturalWidth === 200).length === 2'));
       writeFileSync(streamFailure, '1');
@@ -176,7 +204,7 @@ app.on('browser-window-created', (_event, win) => {
       await until(() => wc.executeJavaScript('document.querySelector(".feedback").textContent.includes("Stream connection failed")'));
       assert.equal(win.isMinimized(), false);
       rmSync(streamFailure);
-      await wc.executeJavaScript('Array.from(document.querySelectorAll(".library-utility")).find(b => b.textContent.includes("Open Moonlight")).click()');
+      await wc.executeJavaScript('Array.from(document.querySelectorAll(".game-button")).find(b => b.textContent.includes("Hades II")).click()');
       await until(async () => (await wc.executeJavaScript('window.ubuntuHub.listApps()'))[3].status === 'running');
       await until(async () => (await wc.executeJavaScript('window.ubuntuHub.listApps()'))[3].status === 'idle');
       await wc.executeJavaScript(`
@@ -245,6 +273,13 @@ fakeUpdatePort.checkForUpdates = async () => { fakeUpdatePort.emit('update-not-a
 fakeUpdatePort.downloadUpdate = async () => { fakeUpdatePort.emit('download-progress', { percent: 40 }); };
 fakeUpdatePort.quitAndInstall = () => { fakeUpdatePort.installs++; };
 if (!captureOnly) {
+  // CLI fixtures do not create real native windows. Exercise the loading state
+  // with delayed readiness; X11/fullscreen matching has its own probe tests.
+  const readiness = require('../dist-electron/electron/native-readiness.js');
+  readiness.createNativeReadiness = async () => ({
+    output() {},
+    async wait(_pid, signal) { await require('node:timers/promises').setTimeout(600, undefined, { signal }); }
+  });
   const { UpdateManager } = require('../dist-electron/electron/update-manager.js');
   const bootstrap = require('../dist-electron/electron/updater.js');
   bootstrap.createUpdates = async options => new UpdateManager({
@@ -252,4 +287,7 @@ if (!captureOnly) {
     isBusy: options.isBusy, beforeInstall: async () => {}, installFailed: () => {},
   });
 }
+const registerHandler = ipcMain.handle.bind(ipcMain);
+ipcMain.handle = (channel, handler) => registerHandler(channel, channel === 'hub:moonlight-library'
+  ? (...args) => { libraryReads++; return handler(...args); } : handler);
 require('../dist-electron/electron/main.js');

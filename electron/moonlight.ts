@@ -71,9 +71,10 @@ export class MoonlightIntegration {
   async library(id: string, refresh = false): Promise<MoonlightLibrary> {
     const config = this.config(id);
     const snapshot = this.snapshot(id);
-    if (!snapshot.configured || (!refresh && (snapshot.games.length > 0 || this.sources.has(id)))) return snapshot;
+    if (!snapshot.configured) return snapshot;
     const existing = this.requests.get(id);
     if (existing) return existing;
+    if (!refresh && this.sources.has(id)) return snapshot;
     const request = (async () => {
       const query = async (csv: boolean) => {
         const args = [...config.args, 'list', ...(csv ? ['--csv'] : []), '--', config.moonlight.host];

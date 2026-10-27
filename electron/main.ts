@@ -56,6 +56,7 @@ async function openWeb(config: AppConfig) {
   });
   try {
     await win.loadURL(config.url!);
+    launcher.setAlwaysOnTop(false);
     win.show(); win.focus(); launcher.hide();
   } catch (error) { win.destroy(); throw error; }
 }
@@ -83,6 +84,11 @@ else {
     }
     const configs = await loadConfig(configPath);
     moonlight = new MoonlightIntegration(configs);
+    // Start discovery immediately, including when saved games are configured.
+    // The library view joins this request and retries on opening if it failed.
+    for (const config of configs) if (config.moonlight) {
+      void moonlight.library(config.id, true).catch(() => { /* Show/retry discovery errors when the library is opened. */ });
+    }
     protocol.handle('ubuntuhub-art', async request => {
       try {
         const url = new URL(request.url);
@@ -93,7 +99,14 @@ else {
         return new Response(new Uint8Array(bytes), { headers: { 'Content-Type': 'image/png', 'Cache-Control': 'private, max-age=3600', 'X-Content-Type-Options': 'nosniff' } });
       } catch { return new Response('No cover available', { status: 404, headers: { 'Cache-Control': 'no-store' } }); }
     });
-    manager = new ProcessManager(configs, () => { if (launcher && !launcher.isDestroyed()) launcher.webContents.send('hub:apps', manager.list()); updates?.refresh(); }, id => {
+    manager = new ProcessManager(configs, () => {
+      if (launcher && !launcher.isDestroyed()) {
+        const apps = manager.list();
+        launcher.setAlwaysOnTop(apps.some(item => item.status === 'starting'), 'screen-saver');
+        launcher.webContents.send('hub:apps', apps);
+      }
+      updates?.refresh();
+    }, id => {
       windows.get(id)?.close(); restore();
     });
     launcher = new BrowserWindow({ fullscreen: true, frame: false, backgroundColor: '#101113', show: false, webPreferences: { preload: path.join(__dirname, 'preload.js'), nodeIntegration: false, contextIsolation: true, sandbox: true } });
@@ -146,6 +159,13 @@ else {
       } catch (error) { return { ok: false, error: error instanceof Error ? error.message : 'Could not start stream.' }; }
     });
     ipcMain.handle('hub:return', event => { trusted(event); restore(); return { ok: true }; });
+    ipcMain.handle('hub:cancel-launch', (event, id: unknown) => {
+      trusted(event);
+      if (typeof id !== 'string' || !manager.list().some(item => item.id === id && item.status === 'starting')) return { ok: false, error: 'No pending launch for this application.' };
+      manager.stop(id);
+      windows.get(id)?.destroy();
+      return { ok: true };
+    });
     ipcMain.handle('hub:update-state', event => { trusted(event); return updates.snapshot(); });
     ipcMain.handle('hub:update-check', event => { trusted(event); return updates.check(); });
     ipcMain.handle('hub:update-install', event => { trusted(event); return updates.install(); });

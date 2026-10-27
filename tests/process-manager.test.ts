@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
 import { ProcessManager } from '../electron/process-manager';
+import { readyImmediately } from './fixtures/readiness';
 import type { AppConfig } from '../shared/types';
 function config(args: string[]): AppConfig {
   return { id: 'test', name: 'Test', subtitle: '', icon: 'terminal', color: '#ffffff', type: 'native', command: process.execPath, args, cwd: process.cwd() };
@@ -13,7 +14,7 @@ async function until(check: () => boolean) {
 }
 test('tracks process, rejects duplicate launches, and restores on exit', async () => {
   let exits = 0;
-  const manager = new ProcessManager([config(['-e', 'setTimeout(() => {}, 500)'])], () => {}, () => { exits++; });
+  const manager = new ProcessManager([config(['-e', 'setTimeout(() => {}, 500)'])], () => {}, () => { exits++; }, readyImmediately);
   try {
     const first = manager.launch('test', async () => {});
     assert.equal((await manager.launch('test', async () => {})).ok, false);
@@ -24,24 +25,72 @@ test('tracks process, rejects duplicate launches, and restores on exit', async (
   } finally { manager.stopAll(); }
 });
 test('reports missing executables and permits retry', async () => {
-  const manager = new ProcessManager([{ ...config([]), command: 'ubuntuhub-command-that-does-not-exist' }], () => {}, () => {});
+  const manager = new ProcessManager([{ ...config([]), command: 'ubuntuhub-command-that-does-not-exist' }], () => {}, () => {}, readyImmediately);
   assert.equal((await manager.launch('test', async () => {})).ok, false);
   assert.equal(manager.list()[0].status, 'error');
   assert.match(manager.list()[0].error!, /ENOENT/);
   assert.equal((await manager.launch('test', async () => {})).ok, false);
 });
 test('reports nonzero exits', async () => {
-  const manager = new ProcessManager([config(['-e', 'process.exit(3)'])], () => {}, () => {});
+  const manager = new ProcessManager([config(['-e', 'process.exit(3)'])], () => {}, () => {}, readyImmediately);
   await manager.launch('test', async () => {});
   await until(() => manager.list()[0].status === 'error');
   assert.match(manager.list()[0].error!, /exited \(3\)/);
 });
 test('web startup timeout terminates the managed process', async () => {
-  const manager = new ProcessManager([{ ...config(['-e', 'setInterval(() => {}, 1000)']), type: 'web', url: 'http://127.0.0.1:1', startupTimeoutMs: 1000 }], () => {}, () => {});
+  const manager = new ProcessManager([{ ...config(['-e', 'setInterval(() => {}, 1000)']), type: 'web', url: 'http://127.0.0.1:1', startupTimeoutMs: 1000 }], () => {}, () => {}, readyImmediately);
   try {
     const result = await manager.launch('test', async () => { assert.fail('Should not open a window'); });
     assert.equal(result.ok, false);
     assert.equal(manager.list()[0].status, 'error');
     assert.match(manager.list()[0].error!, /did not become ready/);
   } finally { manager.stopAll(); }
+});
+
+test('native startup remains starting until window readiness and captures both output streams', async () => {
+  let release!: () => void;
+  let output = '';
+  const manager = new ProcessManager([config(['-e', 'console.log("video"); console.error("window"); setInterval(() => {}, 1000)'])], () => {}, () => {}, async () => ({
+    output: data => { output += data; },
+    wait: async () => new Promise<void>(resolve => { release = resolve; })
+  }));
+  try {
+    const launching = manager.launch('test', async () => {});
+    await until(() => !!release && output.includes('video') && output.includes('window'));
+    assert.equal(manager.list()[0].status, 'starting');
+    release();
+    assert.equal((await launching).ok, true);
+    assert.equal(manager.list()[0].status, 'running');
+  } finally { manager.stopAll(); }
+});
+
+test('native cancellation and readiness timeout clear starting and allow retry', async () => {
+  const manager = new ProcessManager([{ ...config(['-e', 'setInterval(() => {}, 1000)']), startupTimeoutMs: 1000 }], () => {}, () => {}, async () => ({
+    output() {},
+    wait: async (_pid, signal) => new Promise<void>((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    })
+  }));
+  try {
+    const launching = manager.launch('test', async () => {});
+    await delay(150);
+    manager.stop('test');
+    assert.match((await launching as { error: string }).error, /cancelled/);
+    assert.equal(manager.list()[0].status, 'idle');
+    const result = await manager.launch('test', async () => {});
+    assert.equal(result.ok, false);
+    assert.match(manager.list()[0].error!, /did not become ready/);
+  } finally { manager.stopAll(); }
+});
+
+test('exit before readiness rejects startup and preserves process exit errors', async () => {
+  const manager = new ProcessManager([config(['-e', 'process.exit(3)'])], () => {}, () => {}, async () => ({
+    output() {},
+    wait: async (_pid, signal) => new Promise<void>((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    })
+  }));
+  assert.equal((await manager.launch('test', async () => {})).ok, false);
+  assert.equal(manager.list()[0].status, 'error');
+  assert.match(manager.list()[0].error!, /exited \(3\)/);
 });

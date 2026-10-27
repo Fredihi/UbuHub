@@ -7,6 +7,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { parseConfig, parseMoonlight } from '../electron/config';
 import { MoonlightIntegration, parseGameList } from '../electron/moonlight';
 import { ProcessManager } from '../electron/process-manager';
+import { readyImmediately } from './fixtures/readiness';
 import type { AppConfig } from '../shared/types';
 
 function config(moonlight: unknown = { host: 'gaming-pc', games: [] }): AppConfig {
@@ -33,7 +34,7 @@ test('unconfigured host returns setup state without running commands', async () 
   assert.equal((await integration.library('moonlight')).configured, false);
   assert.throws(() => integration.streamArgs('moonlight', 'unknown'), /Configure/);
 });
-test('curated games work without discovery; refresh caches host list and retains it on failure', async () => {
+test('initial discovery updates curated games; cached host list survives refresh failures', async () => {
   let calls = 0;
   const integration = new MoonlightIntegration([config({ host: 'pc', games: [{ id: 'favorite', name: 'Favorite', app: 'Real App' }] })], async (_config, args) => {
     calls++;
@@ -41,9 +42,7 @@ test('curated games work without discovery; refresh caches host list and retains
     if (calls > 1) throw new Error('Host offline');
     return 'Real App\nAnother App\n';
   });
-  assert.equal((await integration.library('moonlight')).source, 'configured');
-  assert.equal(calls, 0);
-  assert.equal((await integration.library('moonlight', true)).games.length, 2);
+  assert.equal((await integration.library('moonlight')).games.length, 2);
   assert.equal((await integration.library('moonlight')).source, 'host');
   assert.equal(calls, 1);
   await assert.rejects(integration.library('moonlight', true), /offline/);
@@ -52,12 +51,24 @@ test('curated games work without discovery; refresh caches host list and retains
 });
 test('deduplicates discovery requests and blocks stream launch while discovery is pending', async () => {
   let calls = 0;
-  const integration = new MoonlightIntegration([config()], async () => { calls++; await delay(20); return 'Game'; });
-  const one = integration.library('moonlight');
-  const two = integration.library('moonlight', true);
+  const integration = new MoonlightIntegration([config({ host: 'gaming-pc', games: [{ id: 'saved', name: 'Saved' }] })], async () => { calls++; await delay(20); return 'Game'; });
+  const one = integration.library('moonlight', true);
+  const two = integration.library('moonlight');
   assert.throws(() => integration.streamArgs('moonlight', 'x'), /refreshing/);
   await Promise.all([one, two]);
   assert.equal(calls, 1);
+  assert.equal(integration.snapshot('moonlight').games[0].name, 'Game');
+});
+
+test('opening the library retries failed startup discovery instead of returning stale configured games', async () => {
+  let calls = 0;
+  const integration = new MoonlightIntegration([config({ host: 'pc', games: [{ id: 'saved', name: 'Saved' }] })], async () => {
+    if (++calls === 1) throw new Error('Host offline');
+    return 'New game';
+  });
+  await assert.rejects(integration.library('moonlight', true), /offline/);
+  assert.equal((await integration.library('moonlight')).games[0].name, 'New game');
+  assert.equal(calls, 2);
 });
 test('Flatpak prefix, spaces and option-like names remain individual shell-free arguments', async () => {
   const app = { ...config({ host: 'pc', games: [{ id: 'game', name: 'Game', app: '-Game $(danger) "quoted"' }] }), command: 'flatpak', args: ['run', 'com.moonlight_stream.Moonlight'] };
@@ -71,7 +82,7 @@ test('launches a fake CLI with exact arguments, shares duplicate lock, and track
   await writeFile(fixture, `const fs = require('fs'); const args = process.argv.slice(2); if (args[0] === 'list') console.log('Game with spaces'); else { fs.writeFileSync(${JSON.stringify(argsFile)}, JSON.stringify(args)); setTimeout(() => {}, 350); }`);
   const app = { ...config(), command: process.execPath, args: [fixture], cwd: directory };
   const integration = new MoonlightIntegration([app]);
-  const manager = new ProcessManager([app], () => {}, () => {});
+  const manager = new ProcessManager([app], () => {}, () => {}, readyImmediately);
   try {
     const library = await integration.library('moonlight');
     assert.equal(library.games[0].name, 'Game with spaces');

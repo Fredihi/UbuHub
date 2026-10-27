@@ -45,6 +45,7 @@ export interface UpdateState {
 export interface HubAPI {
   listApps(): Promise<AppTile[]>;
   launch(id: string): Promise<Result>;
+  cancelLaunch(id: string): Promise<Result>;
   moonlightLibrary(id: string, refresh?: boolean): Promise<MoonlightLibraryResult>;
   launchMoonlight(id: string, gameId: string): Promise<Result>;
   returnToLauncher(): Promise<Result>;
